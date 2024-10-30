@@ -9,7 +9,7 @@ import {
 const ECPair = ECPairFactory(tinysecp);
 const network = bitcoin.networks.testnet;
 
-interface UTXO {
+export interface UTXO {
   txid: string;
   vout: number;
   value: bigint;
@@ -189,13 +189,32 @@ class MultisigWallet {
       // Handle both legacy and SegWit inputs
       if (utxo.scriptPubKey.startsWith("0020")) {
         // P2WSH
+        const payment = bitcoin.payments.p2wsh({
+          redeem: {
+            output: this.redeemScript,
+            network,
+          },
+          network,
+        });
+        
         inputData.witnessUtxo = {
-          script: Buffer.from(utxo.scriptPubKey, "hex"),
-          value: utxo.value,
+          script: payment.output!, // Use the correct P2WSH scriptPubKey
+          value: Number(utxo.value),
         };
       } else {
         // P2SH
-        inputData.nonWitnessUtxo = Buffer.from(utxo.scriptPubKey, "hex");
+        const payment = bitcoin.payments.p2sh({
+          redeem: {
+            output: this.redeemScript,
+            network,
+          },
+          network,
+        });
+        
+        inputData.witnessUtxo = {
+          script: payment.output!,
+          value: Number(utxo.value),
+        };
       }
 
       psbt.addInput(inputData);
@@ -213,7 +232,7 @@ class MultisigWallet {
       }
       psbt.addOutput({
         address: output.address,
-        value: output.value,
+        value: Number(output.value),
       });
     });
 
