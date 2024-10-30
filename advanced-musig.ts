@@ -1,108 +1,271 @@
-// import * as bitcoin from 'bitcoinjs-lib';
-// import * as bip32 from 'bip32';
-// import * as bip39 from 'bip32';
-// import * as ecc from 'tiny-secp256k1';
+import * as bitcoin from "bitcoinjs-lib";
+import { BIP32Factory } from "bip32";
+import * as ecc from "tiny-secp256k1";
+import * as bip39 from "bip39";
 
-// bitcoin.initEccLib(ecc);
+// Initialize cryptographic libraries
+const bip32 = BIP32Factory(ecc);
+bitcoin.initEccLib(ecc);
 
-// // Step 1: Initialize wallet parameters
-// // - Number of required signatures (m)
-// // - Total number of possible signers (n)
+// Add a simple logging utility
+const log = {
+  info: (message: string, data?: any) => {
+    console.log(`[INFO] ${message}`, data ? data : "");
+  },
+  warn: (message: string) => {
+    console.warn(`[WARN] ${message}`);
+  },
+};
 
-// class MultisigWallet {
-//     requiredSignatures: number;
-//     totalSigners: number;
-//     keyPairs: { publicKey: Buffer, privateKey: Buffer }[] = [];
+/**
+ * Configuration options for the multisig wallet
+ * @property network - Bitcoin network (mainnet/testnet)
+ * @property derivationPath - Custom BIP32 derivation path
+ */
+interface WalletConfig {
+  network?: bitcoin.Network;
+  derivationPath?: string;
+}
 
-//     constructor(requiredSignatures: number, totalSigners: number) {
-//         this.requiredSignatures = requiredSignatures;
-//         this.totalSigners = totalSigners;
-//     }
+/**
+ * Information about a key pair in the multisig wallet
+ * @property mnemonic - BIP39 mnemonic phrase for key recovery
+ * @property path - Full derivation path including index
+ * @property publicKey - Public key buffer
+ * @property privateKey - Optional private key buffer
+ */
+interface KeyPairInfo {
+  mnemonic: string;
+  path: string;
+  publicKey: Buffer;
+  privateKey?: Buffer;
+}
 
-//     // Step 2: Generate keys for each signer
-//     // - Each signer has a unique public-private key pair
-//     async generateKeysForSigners() {
-//         for (let i = 0; i < this.totalSigners; i++) {
-//             const keyPair = this.generateKeyPair();
-//             this.keyPairs.push(keyPair);
-//         }
-//     }
+/**
+ * Advanced Multisig Wallet implementation with HD wallet support
+ * Implements BIP32 for hierarchical deterministic wallets
+ * Implements BIP39 for mnemonic backup
+ * Supports both P2SH and P2WSH (native SegWit) addresses
+ */
+export class AdvancedMultisigWallet {
+  private requiredSignatures: number; // Number of signatures required (m)
+  private totalSigners: number; // Total number of signers (n)
+  private network: bitcoin.Network; // Bitcoin network configuration
+  private derivationPath: string; // Base derivation path
+  private keyPairs: KeyPairInfo[]; // Array of key pair information
+  private redeemScript?: Buffer; // Multisig redeem script
+  private addresses?: {
+    // Wallet addresses
+    p2sh: string; // Legacy P2SH address
+    p2wsh: string; // Native SegWit P2WSH address
+  };
 
-//     generateKeyPair() {
-//         // Generate a random mnemonic and derive keys
-//         const mnemonic = bip39.generateMnemonic();
-//         const seed = bip39.mnemonicToSeedSync(mnemonic);
-//         const root = bip32.fromSeed(seed);
-//         const keyPair = root.derivePath('m/44'/0'/0'/0/0');
-//         return {
-//             publicKey: keyPair.publicKey,
-//             privateKey: keyPair.privateKey!
-//         };
-//     }
+  /**
+   * Creates a new multisig wallet
+   * @param requiredSignatures - Number of required signatures (m)
+   * @param totalSigners - Total number of signers (n)
+   * @param config - Optional wallet configuration
+   */
+  constructor(
+    requiredSignatures: number,
+    totalSigners: number,
+    config: WalletConfig = {}
+  ) {
+    // Validate m-of-n requirements
+    if (
+      requiredSignatures <= 0 ||
+      totalSigners <= 0 ||
+      requiredSignatures > totalSigners
+    ) {
+      throw new Error("Invalid signature requirements");
+    }
 
-//     // Step 3: Create the multisig address
-//     // - Combine public keys of all signers to create the multisig address
-//     createMultisigAddress() {
-//         const publicKeys = this.keyPairs.map(keyPair => keyPair.publicKey).sort(Buffer.compare);
-//         const { output } = bitcoin.payments.p2ms({ m: this.requiredSignatures, pubkeys: publicKeys });
-//         if (!output) throw new Error('Failed to create multisig output script');
-//         const { address } = bitcoin.payments.p2sh({ redeem: { output } });
-//         if (!address) throw new Error('Failed to create multisig address');
-//         return address;
-//     }
+    this.requiredSignatures = requiredSignatures;
+    this.totalSigners = totalSigners;
+    this.network = config.network || bitcoin.networks.testnet;
+    this.derivationPath = config.derivationPath || "m/44'/0'/0'/0"; // Default BIP44 path
+    this.keyPairs = [];
 
-//     // Step 4: Create a transaction that requires m-of-n signatures
-//     // - Create a transaction to spend funds from the multisig address
-//     createTransaction(toAddress: string, amount: number) {
-//         const txb = new bitcoin.TransactionBuilder();
-//         txb.addInput('previous-tx-id', 0); // Replace with a real previous transaction ID and index
-//         txb.addOutput(toAddress, amount);
-//         return txb;
-//     }
+    log.info(
+      `Initializing ${requiredSignatures}-of-${totalSigners} multisig wallet`,
+      {
+        network:
+          this.network === bitcoin.networks.bitcoin ? "mainnet" : "testnet",
+        basePath: this.derivationPath,
+      }
+    );
+  }
 
-//     // Step 5: Sign the transaction with the required number of keys
-//     // - Each signer provides their signature
-//     signTransaction(transactionBuilder: bitcoin.TransactionBuilder, privateKeys: Buffer[]) {
-//         privateKeys.forEach((privateKey, index) => {
-//             transactionBuilder.sign(index, bitcoin.ECPair.fromPrivateKey(privateKey));
-//         });
-//         return transactionBuilder;
-//     }
+  /**
+   * Generates a complete wallet with all key pairs
+   * Creates both P2SH and P2WSH addresses
+   */
+  public async generateWallet(): Promise<void> {
+    log.info("Starting wallet generation...");
 
-//     // Step 6: Verify signatures and broadcast transaction
-//     // - Ensure the transaction has the required number of valid signatures
-//     verifyAndBroadcastTransaction(transactionBuilder: bitcoin.TransactionBuilder) {
-//         try {
-//             const tx = transactionBuilder.build();
-//             this.broadcastTransaction(tx);
-//             return 'Transaction broadcasted successfully';
-//         } catch (error) {
-//             return `Error: ${error.message}`;
-//         }
-//     }
+    for (let i = 0; i < this.totalSigners; i++) {
+      const keyPair = await this.generateKeyPair(i);
+      this.keyPairs.push(keyPair);
+      log.info(`Generated key pair ${i + 1}/${this.totalSigners}`, {
+        path: keyPair.path,
+      });
+    }
 
-//     broadcastTransaction(transaction: bitcoin.Transaction) {
-//         // Simulate broadcasting the transaction
-//         console.log('Broadcasting transaction:', transaction.toHex());
-//     }
-// }
+    this.createMultisigAddresses();
+    log.info("Wallet generation complete", {
+      addresses: this.addresses,
+    });
+  }
 
-// // Example Usage
-// (async () => {
-//     const wallet = new MultisigWallet(2, 3);
-//     await wallet.generateKeysForSigners();
-//     const multisigAddress = wallet.createMultisigAddress();
-//     console.log('Multisig Address:', multisigAddress);
-//     const transaction = wallet.createTransaction('recipientAddress', 10000);
-//     const signedTransaction = wallet.signTransaction(transaction, [wallet.keyPairs[0].privateKey, wallet.keyPairs[1].privateKey]);
-//     const result = wallet.verifyAndBroadcastTransaction(signedTransaction);
-//     console.log(result);
-// })();
+  /**
+   * Generates a single key pair with mnemonic backup
+   * @param index - Index of the key pair in the wallet
+   * @returns KeyPairInfo containing the generated keys and backup info
+   */
+  private async generateKeyPair(index: number): Promise<KeyPairInfo> {
+    // Generate mnemonic with 256-bit entropy (24 words)
+    const mnemonic = bip39.generateMnemonic(256);
+    const seed = await bip39.mnemonicToSeed(mnemonic);
 
-// // Bug: The wallet is unable to verify the required number of signatures
-// // Potential causes:
-// // - Incorrect key pairing
-// // - Signature validation logic error
-// // - Mismatch in the number of required signatures
+    // Derive master node and child key
+    const root = bip32.fromSeed(seed, this.network);
+    const path = `${this.derivationPath}/${index}`;
+    const child = root.derivePath(path);
 
-// // Expected Outcome: Fix the bug so that the multisig wallet can correctly generate and verify signatures, allowing the transaction to be successfully broadcasted.
+    if (!child.privateKey) {
+      log.warn("Failed to generate private key");
+      throw new Error("Failed to generate private key");
+    }
+
+    return {
+      mnemonic,
+      path,
+      publicKey: Buffer.from(child.publicKey),
+      privateKey: Buffer.from(child.privateKey),
+    };
+  }
+
+  /**
+   * Creates P2SH and P2WSH addresses from public keys
+   * Uses sorted public keys for deterministic address generation
+   */
+  private createMultisigAddresses(): void {
+    log.info("Creating multisig addresses...");
+
+    // Sort public keys for deterministic script creation
+    const publicKeys = this.keyPairs
+      .map((kp) => kp.publicKey)
+      .sort((a, b) => a.compare(b));
+
+    // Create multisig redeem script
+    const redeemScript = bitcoin.payments.p2ms({
+      m: this.requiredSignatures,
+      pubkeys: publicKeys,
+      network: this.network,
+    }).output;
+
+    if (!redeemScript) {
+      log.warn("Failed to create redeem script");
+      throw new Error("Failed to create redeem script");
+    }
+
+    this.redeemScript = redeemScript;
+    log.info("Created redeem script", {
+      scriptHex: redeemScript.toString("hex").slice(0, 32) + "...",
+    });
+
+    // Generate legacy P2SH address
+    const p2sh = bitcoin.payments.p2sh({
+      redeem: { output: redeemScript, network: this.network },
+      network: this.network,
+    });
+
+    // Generate native SegWit P2WSH address
+    const p2wsh = bitcoin.payments.p2wsh({
+      redeem: { output: redeemScript, network: this.network },
+      network: this.network,
+    });
+
+    if (!p2sh.address || !p2wsh.address) {
+      log.warn("Failed to generate addresses");
+      throw new Error("Failed to generate addresses");
+    }
+
+    this.addresses = {
+      p2sh: p2sh.address,
+      p2wsh: p2wsh.address,
+    };
+  }
+
+  // Getter methods
+  public getAddresses() {
+    if (!this.addresses) {
+      throw new Error("Wallet not initialized. Call generateWallet() first.");
+    }
+    return this.addresses;
+  }
+
+  public getMnemonics(): string[] {
+    return this.keyPairs.map((kp) => kp.mnemonic);
+  }
+
+  public getDerivationPaths(): string[] {
+    return this.keyPairs.map((kp) => kp.path);
+  }
+
+  /**
+   * Restores a key pair from a mnemonic phrase
+   * @param mnemonic - BIP39 mnemonic phrase
+   * @param index - Index of the key pair to restore
+   * @returns Restored key pair information
+   */
+  public restoreFromMnemonic(
+    mnemonic: string,
+    index: number
+  ): Promise<KeyPairInfo> {
+    log.info(`Attempting to restore key pair at index ${index}`);
+
+    if (index < 0 || index >= this.totalSigners) {
+      log.warn(`Invalid signer index: ${index}`);
+      throw new Error("Invalid signer index");
+    }
+    return this.recoverKeyPair(mnemonic, index);
+  }
+
+  /**
+   * Internal method to recover a key pair from a mnemonic
+   * @param mnemonic - BIP39 mnemonic phrase
+   * @param index - Derivation index
+   * @returns Recovered key pair information
+   */
+  private async recoverKeyPair(
+    mnemonic: string,
+    index: number
+  ): Promise<KeyPairInfo> {
+    if (!bip39.validateMnemonic(mnemonic)) {
+      log.warn("Invalid mnemonic provided");
+      throw new Error("Invalid mnemonic");
+    }
+
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    const root = bip32.fromSeed(seed, this.network);
+    const path = `${this.derivationPath}/${index}`;
+    const child = root.derivePath(path);
+
+    if (!child.privateKey) {
+      log.warn("Failed to recover private key");
+      throw new Error("Failed to recover private key");
+    }
+
+    log.info(`Successfully recovered key pair at index ${index}`, {
+      path,
+    });
+
+    return {
+      mnemonic,
+      path,
+      publicKey: Buffer.from(child.publicKey),
+      privateKey: Buffer.from(child.privateKey),
+    };
+  }
+}

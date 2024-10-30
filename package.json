@@ -9,6 +9,8 @@
     "workshop:broken-musig": "node dist/broken-musig-test-case.js",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:advanced-musig": "jest --testNamePattern=AdvancedMultisigWallet",
+    "test:intermediate-musig": "jest --testNamePattern=MultisigWallet",
     "test:watch": "jest --watch"
   },
   "keywords": [
@@ -28,6 +30,7 @@
   },
   "dependencies": {
     "bip32": "^5.0.0-rc.0",
+    "bip39": "^3.1.0",
     "bitcoin-address-validation": "^2.2.1",
     "bitcoinjs-lib": "^6.1.5",
     "ecpair": "^2.1.0",
