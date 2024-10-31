@@ -83,7 +83,7 @@ export class AdvancedMultisigWallet {
     this.requiredSignatures = requiredSignatures;
     this.totalSigners = totalSigners;
     this.network = config.network || bitcoin.networks.testnet;
-    this.derivationPath = config.derivationPath || "m/44'/0'/0'/0"; // Default BIP44 path
+    this.derivationPath = config.derivationPath || "m/48'/0'/0'/2'"; // BIP48 multisig path
     this.keyPairs = [];
 
     log.info(
@@ -211,6 +211,19 @@ export class AdvancedMultisigWallet {
 
   public getDerivationPaths(): string[] {
     return this.keyPairs.map((kp) => kp.path);
+  }
+
+  public getRedeemScript(): Buffer {
+    if (!this.redeemScript) {
+      throw new Error(
+        "Redeem script not initialized. Call generateWallet() first."
+      );
+    }
+    return this.redeemScript;
+  }
+
+  public getPublicKeys(): Buffer[] {
+    return this.keyPairs.map((kp) => kp.publicKey).sort((a, b) => a.compare(b));
   }
 
   /**

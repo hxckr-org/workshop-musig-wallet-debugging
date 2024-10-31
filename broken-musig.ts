@@ -1,171 +1,198 @@
-// import * as bitcoin from 'bitcoinjs-lib';
-// import { ECPairFactory } from 'ecpair';
-// import * as tinysecp from 'tiny-secp256k1';
+import * as bitcoin from "bitcoinjs-lib";
+import { BIP32Factory } from "bip32";
+import * as ecc from "tiny-secp256k1";
+import * as bip39 from "bip39";
 
-// const ECPair = ECPairFactory(tinysecp);
-// const network = bitcoin.networks.testnet;
+const bip32 = BIP32Factory(ecc);
+bitcoin.initEccLib(ecc);
 
-// interface UTXO {
-//     txid: string;
-//     vout: number;
-//     value: number;
-//     scriptPubKey: string;
-// }
+const log = {
+  info: (message: string, data?: any) => {
+    console.log(`[INFO] ${message}`, data ? data : "");
+  },
+};
 
-// interface Output {
-//     address: string;
-//     value: number;
-// }
+interface WalletConfig {
+  network?: bitcoin.Network;
+  derivationPath?: string;
+}
 
-// class BrokenMultisigWallet {
-//     private m: number;                    // Required signatures
-//     private n: number;                    // Total signers
-//     private pubkeys: Buffer[];            // Ordered public keys
-//     private redeemScript: Buffer;
-//     private p2shAddress: string;
-//     private p2wshAddress: string;
+interface KeyPairInfo {
+  mnemonic: string;
+  path: string;
+  publicKey: Buffer;
+  privateKey?: Buffer;
+}
 
-//     constructor(
-//         requiredSigs: number,
-//         publicKeys: Buffer[],
-//     ) {
-//         // BUG 1: Missing validation of m <= n
-//         this.m = requiredSigs;
-//         this.n = publicKeys.length;
-//         this.pubkeys = publicKeys;
+export class BrokenMultisigWallet {
+  private requiredSignatures: number;
+  private totalSigners: number;
+  private network: bitcoin.Network;
+  private derivationPath: string;
+  private keyPairs: KeyPairInfo[];
+  private redeemScript?: Buffer;
+  private addresses?: {
+    p2sh: string;
+    p2wsh: string;
+  };
 
-//         // BUG 2: Incorrect redeem script creation - not sorting pubkeys
-//         this.redeemScript = this.createRedeemScript();
-        
-//         // BUG 3: Incorrect P2SH derivation
-//         const p2sh = bitcoin.payments.p2sh({
-//             redeem: {
-//                 output: this.redeemScript,
-//                 network
-//             },
-//             network
-//         });
-        
-//         // BUG 4: Incorrect P2WSH creation - using wrong witness program
-//         const p2wsh = bitcoin.payments.p2wsh({
-//             redeem: {
-//                 output: this.redeemScript,
-//                 network
-//             },
-//             network
-//         });
+  constructor(
+    requiredSignatures: number,
+    totalSigners: number,
+    config: WalletConfig = {}
+  ) {
+    if (requiredSignatures > totalSigners) {
+      throw new Error("Invalid signature requirements");
+    }
 
-//         this.p2shAddress = p2sh.address!;
-//         this.p2wshAddress = p2wsh.address!;
-//     }
+    this.requiredSignatures = requiredSignatures;
+    this.totalSigners = totalSigners;
+    this.network = bitcoin.networks.testnet;
+    this.derivationPath = config.derivationPath || "m/49'/0'/0'/0";
+    this.keyPairs = [];
+  }
 
-//     private createRedeemScript(): Buffer {
-//         // BUG 5: Incorrect OP_M implementation
-//         const script = bitcoin.script.compile([
-//             bitcoin.script.number.encode(this.m),
-//             ...this.pubkeys,
-//             bitcoin.script.number.encode(this.n),
-//             bitcoin.opcodes.OP_CHECKMULTISIG
-//         ]);
-//         return script;
-//     }
+  public async generateWallet(): Promise<void> {
+    for (let i = 0; i < this.totalSigners; i++) {
+      const keyPair = await this.generateKeyPair(i);
+      this.keyPairs.push(keyPair);
+    }
 
-//     public getAddresses() {
-//         return {
-//             p2sh: this.p2shAddress,
-//             p2wsh: this.p2wshAddress
-//         };
-//     }
+    this.createMultisigAddresses();
+  }
 
-//     public createTransaction(utxos: UTXO[], outputs: Output[], fee: number) {
-//         // BUG 6: Missing input amount validation
-//         const psbt = new bitcoin.Psbt({ network });
-        
-//         // Add inputs
-//         utxos.forEach(utxo => {
-//             // BUG 7: Incorrect input script handling
-//             psbt.addInput({
-//                 hash: utxo.txid,
-//                 index: utxo.vout,
-//                 witnessUtxo: {
-//                     script: Buffer.from(utxo.scriptPubKey, 'hex'),
-//                     value: utxo.value,
-//                 },
-//                 redeemScript: this.redeemScript
-//             });
-//         });
+  public async generateKeyPair(index: number): Promise<KeyPairInfo> {
+    const mnemonic = bip39.generateMnemonic(256);
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    const root = bip32.fromSeed(seed, this.network);
+    const path = `${this.derivationPath}/${index}`;
+    const child = root.derivePath(path);
 
-//         // Add outputs
-//         outputs.forEach(output => {
-//             psbt.addOutput({
-//                 address: output.address,
-//                 value: output.value,
-//             });
-//         });
+    return {
+      mnemonic,
+      path,
+      publicKey: Buffer.from(child.publicKey),
+      privateKey: child.privateKey ? Buffer.from(child.privateKey) : undefined,
+    };
+  }
 
-//         return psbt;
-//     }
+  private createMultisigAddresses(): void {
+    const publicKeys = this.keyPairs.map((kp) => kp.publicKey);
 
-//     public signTransaction(psbt: bitcoin.Psbt, keyPair: bitcoin.ECPairInterface, inputIndex: number) {
-//         // BUG 8: No validation if signer is part of multisig
-//         try {
-//             // BUG 9: Wrong sighash type
-//             psbt.signInput(inputIndex, keyPair, [bitcoin.Transaction.SIGHASH_NONE]);
-//             return true;
-//         } catch (error) {
-//             console.error('Signing error:', error);
-//             return false;
-//         }
-//     }
+    const redeemScript = bitcoin.payments.p2pkh({
+      pubkey: publicKeys[0],
+      network: this.network,
+    }).output;
 
-//     public finalizeTransaction(psbt: bitcoin.Psbt): string {
-//         try {
-//             // BUG 10: No validation of signature count
-//             // BUG 11: No validation of duplicate signatures
-//             psbt.finalizeAllInputs();
-            
-//             const tx = psbt.extractTransaction();
-//             return tx.toHex();
-//         } catch (error) {
-//             throw new Error(`Transaction finalization failed: ${error}`);
-//         }
-//     }
+    if (!redeemScript) {
+      throw new Error("Failed to create redeem script");
+    }
 
-//     // Helper to verify transaction (broken implementation)
-//     public verifyTransaction(psbt: bitcoin.Psbt): boolean {
-//         // BUG 12: Incorrect signature verification
-//         const inputs = psbt.data.inputs;
-//         let sigCount = 0;
+    this.redeemScript = redeemScript;
 
-//         inputs.forEach(input => {
-//             if (input.partialSig) {
-//                 // BUG 13: Counting signatures without verifying them
-//                 sigCount += input.partialSig.length;
-//             }
-//         });
+    const p2sh = bitcoin.payments.p2sh({
+      redeem: {
+        output: redeemScript,
+        network: this.network,
+      },
+      network: this.network,
+    });
 
-//         // BUG 14: Wrong signature threshold check
-//         return sigCount >= this.m - 1;
-//     }
-// }
+    const p2wsh = bitcoin.payments.p2wsh({
+      redeem: {
+        output: bitcoin.script.compile([
+          bitcoin.opcodes.OP_1,
+          ...publicKeys,
+          bitcoin.opcodes.OP_1,
+          bitcoin.opcodes.OP_CHECKMULTISIG,
+        ]),
+        network: this.network,
+      },
+      network: this.network,
+    });
 
-// // Example usage and test setup
-// function createTestWallet() {
-//     const keyPairs = [
-//         ECPair.makeRandom({ network }),
-//         ECPair.makeRandom({ network }),
-//         ECPair.makeRandom({ network })
-//     ];
+    if (!p2sh.address || !p2wsh.address) {
+      throw new Error("Failed to generate addresses");
+    }
 
-//     const pubkeys = keyPairs.map(kp => kp.publicKey);
-    
-//     // BUG 15: Allowing more required signatures than signers
-//     const wallet = new BrokenMultisigWallet(4, pubkeys);
-    
-//     return {
-//         wallet,
-//         keyPairs
-//     };
-// }
+    this.addresses = {
+      p2sh: p2sh.address,
+      p2wsh: p2wsh.address,
+    };
+  }
 
-// export { BrokenMultisigWallet, createTestWallet };
+  public getDerivationPaths(): string[] {
+    return this.keyPairs.map((kp) => kp.path);
+  }
+
+  public getPublicKeys(): Buffer[] {
+    return this.keyPairs.map((kp) => kp.publicKey);
+  }
+
+  public getRedeemScript(): Buffer {
+    if (!this.redeemScript) {
+      throw new Error("Redeem script not initialized");
+    }
+    return this.redeemScript;
+  }
+
+  public createInsecureMultisig(): Buffer {
+    const publicKeys = this.keyPairs.map((kp) => kp.publicKey);
+
+    return bitcoin.script.compile([
+      ...publicKeys,
+      bitcoin.opcodes.OP_CHECKMULTISIG,
+      bitcoin.script.number.encode(this.requiredSignatures),
+      bitcoin.script.number.encode(this.totalSigners),
+    ]);
+  }
+
+  public async signTransaction(
+    txHex: string,
+    inputIndex: number,
+    keyPair: KeyPairInfo
+  ): Promise<string> {
+    const tx = bitcoin.Transaction.fromHex(txHex);
+
+    const hashType = bitcoin.Transaction.SIGHASH_NONE;
+
+    const signature = tx.hashForSignature(
+      inputIndex,
+      this.redeemScript!,
+      hashType
+    );
+
+    tx.setInputScript(
+      inputIndex,
+      bitcoin.script.compile([Buffer.from(signature), keyPair.publicKey])
+    );
+
+    return tx.toHex();
+  }
+
+  public createWitness(signatures: Buffer[]): Buffer[] {
+    return [this.redeemScript!, ...signatures];
+  }
+
+  public getAddresses() {
+    return this.addresses;
+  }
+
+  public getMnemonics(): string[] {
+    return this.keyPairs.map((kp) => kp.mnemonic);
+  }
+
+  public validatePath(path: string): boolean {
+    return path.startsWith("m/") && path.split("/").length === 5;
+  }
+
+  public validateMultisigScript(script: Buffer): boolean {
+    const chunks = bitcoin.script.decompile(script);
+    if (!chunks) return false;
+
+    return (
+      chunks.length > 3 &&
+      chunks[chunks.length - 1] === bitcoin.opcodes.OP_CHECKMULTISIG
+    );
+  }
+}
